@@ -1,0 +1,688 @@
+---
+title: "HOILD Demonstration"
+author: "Anish Mukherjee and Jeremy T Gaskins"
+date: 06/03/2026
+fontsize: 10pt
+geometry:
+  - top=1in
+  - bottom=1in
+  - left=1in   # Margins can be set in inches (in)
+  - right=1in
+execute:
+  cache.extra: !expr list(file.mtime('HOILD.R'))
+format: 
+  pdf:
+    keep-tex: true
+    latex-engine: xelatex
+    number-sections: true
+    toc: true               # <-- 1. Enables the Table of Contents
+    toc-depth: 2            # <-- 2. Optional: Sets how deep the menu nesting goes (1.1.1)
+    toc-title: "Contents"
+    code-block-border-left: false      # Removes the left vertical bar line
+    code-block-bg: "#F7F7F7" 
+    include-in-header:
+      text: |
+        \setlength{\defaultaddspace}{0pt}
+        % 1. Force both Code Chunks AND Console Outputs to be footnotesize
+        \AddToHook{env/Highlighting/begin}{\small}
+        \AddToHook{env/verbatim/begin}{\small}
+        
+        % 1. Reduce line spacing INSIDE the code and output blocks
+        \usepackage{etoolbox}
+        \makeatletter
+        \preto{\@verbatim}{\baselineskip=10pt\relax} 
+        \makeatother
+        
+        % 2. Shrink vertical gaps BETWEEN chunks and text
+        \setlength{\topsep}{0pt}
+        \setlength{\partopsep}{0pt}
+        \setlength{\parsep}{0pt}
+editor: visual
+mainfont: "Helvetica"
+---
+
+```{r}
+#| include: false
+
+knitr::opts_chunk$set(echo = FALSE)
+options(knitr.kable.NA = '-')
+options(scipen = 999)
+
+library(kableExtra)
+library(HDInterval)
+
+n_sim <- 10000
+n_burn <- 6000
+
+```
+
+# Introduction
+
+This document demonstrates how the code is used in the manuscript titled "Covariate Informed Identification of Heterogeneity and Outliers in Longitudinal Data" by Anish Mukherjee and Jeremy T Gaskins. The compute-intensive MCMC algorithms and WAIC calculation are implemented in `C++` and have been included in the file `utilities.cpp`, and additional utility functions are included in the file `utilities.R`. To have easy access to these core functions, a set of `R` wrapper functions have been defined in the file `HOILD.R`.
+
+In the following sections, we demonstrate the identification of heterogeneity and outliers in a longitudinal dataset. In @sec-data, we will discuss the format a dataset should have to be used for model fitting. All functions for fitting models HOM-HOV, HEM-HOV, HOM-HOV-O, HEM-HOV-O, and HEM-HEV-O are discussed in @sec-model-fit. The functions for calculating M-WAIC and C-WAIC are presented in @sec-waic. Finally, @sec-estimation evaluates the estimation performance of $\symbf{\beta}$, $\symbf{\gamma}_{u}$, $\symbf{\gamma}_{w}$, and $\symbf{\gamma}_{z}$.
+
+# Data Structure {#sec-data}
+
+We will use CD4 data to demonstrate our approach.
+
+```{r}
+#| include: true
+#| echo: true
+#| cache: true
+
+load('long_dat_all.RData')
+ls(log_cd4_dat)
+
+```
+
+The data is a `list` with three elements -- (1) data is a `list`, where the $i$-th element is the `array` of measurements for the $i$-th individual, (2) `time` is a `list` of `array`s where the index $i$ stores the measurement occasions (recoreded in weeks), (3) `fixed.eff` is a `list` of matrices, where the $i$-th element stores the design matrix for the $i$-th individual. The first column in the design matrices represent the intercept.
+
+```{r}
+#| include: true
+#| echo: true
+#| cache: true
+
+dat <- log_cd4_dat
+n <- length(dat$data)           # number of individuals
+ni_arr <- sapply(dat$data, length)  # an array where ni[i] = number of time-points for i-th individual
+ni_max <- max(ni_arr)               # maximum number of measurement occassions
+dat$data[1:2]
+dat$time[1:2]
+dat$fixed.eff[1:2]
+
+```
+
+# Modeling Fitting {#sec-model-fit}
+
+We source the file `HOILD.R` that will load functions `HOM_HOV`, `HEM_HOV`, `HOM_HOV_O`, `HEM_HOV_O`, and `HEV_HEV_O` for fitting the respective models. All these functions generate a single chain of MCMC samples of prespecified lengths. To obtain multiple chains for a model, the corresponding function can be run multiple times (preferably in parallel).
+
+```{r source_code}
+#| include: true
+#| echo: true
+
+source('HOILD.R')
+
+```
+
+## Model HEM-HEV-O using \texttt{function HEM\_HEV\_O} {#sec-model-fit-hemhevo}
+
+The function takes the following arguments:
+
+-   `dat`: the data formatted as discussed in @sec-data.
+-   `fixed_eff_ind`: column indices for the design matrix to be considered as fixed effects
+-   `rand_eff_ind`: column indices for the design matrix to be considered as random effects
+-   `fixed_eff_u_ind`: column indices for the design matrix to be considered as fixed effects
+-   `fixed_eff_w_ind`: column indices for the design matrix to be considered as fixed effects
+-   `fixed_eff_z_ind`: column indices for the design matrix to be considered as fixed effects
+-   `eta_u`: the scaling factor $\eta_u$ for mean heterogeneity
+-   `eta_w`: the scaling factor $\eta_w$ for mean heterogeneity
+-   `eta_z`: the scaling factor $\eta_z$ for mean heterogeneity
+-   `n_sim`: total number of MCMC iterations
+-   `n_burn`: number of iterations to be removed as burnin
+
+The function returns a `list` consisting of MCMC samples for all the parameters. We only keeps samples starting from `n_burn+1` until `n_sim`, resulting in a sample size of `(n_sim-n_burn+1)`. The parameters returned are:
+
+-   `beta`: a matrix of posterior samples of $\symbf{\beta}$. It has size `(n_sim-n_burn+1) x p`, where `p = length(fixed_eff_ind)` is the number of fixed effects including the intercept.
+-   `r_mat`: a matrix of posterior samples of $\symbf{r}_i$, where $i = 1, \ldots, n$. It has size `(n_sim-n_burn+1) x (nq)`, where `q = length(rand_eff_ind)` is the number of random effects per individual and `n` is the total number of individuals.
+-   `sigma2`: a matrix of posterior samples of $\symbf{\sigma}^2 = (\sigma_0^2, \sigma_1^2)$. It has size `(n_sim-n_burn+1) x 2`. The first column has $\sigma_0^2$ samples, and the second has $\sigma_1^2$ samples.
+-   `sigma.e2`: a matrix of posterior samples of $\sigma_i^2$, where $i = 1, \ldots, n$. It has size `(n_sim-n_burn+1) x n`.
+-   `alpha`: a matrix of posterior samples. It has size `(n_sim-n_burn+1) x 2`, where the first columns consists if 0, and the second column represents the $\alpha$ for the heterogeneous group.
+-   `rho`: an array of posterior samples of $\rho$. It has length `(n_sim-n_burn+1)`.
+-   `u`: a matrix if posterior samples of $\symbf{u} = (u_1, \ldots, u_n)$, the mean heterogeneity indicators. It has size `(n_sim-n_burn+1) x n`.
+-   `w`: a matrix if posterior samples of $\symbf{w} = (\symbf{w}_1, \ldots, \symbf{w}_n)$, where $\symbf{w}_i = (w_{i1}, \ldots, w_{in_i})$ is the indicators for the observation-level outliers for $i$-th individual. It has size `(n_sim-n_burn+1) x (n*ni_max)`.
+-   `z`: a matrix if posterior samples of $\symbf{z} = (z_1, \ldots, z_n)$, the variance heterogeneity indicators. It has size `(n_sim-n_burn+1) x n`.
+-   `gamma.u`: a matrix of posterior samples of $\symbf{\gamma}_u$. It has size `(n_sim-n_burn+1) x d_u`, where `d_u = length(fixed_eff_u_ind)` is the number of predictors in the logistic model for the mean heterogeneity indicators.
+-   `gamma.w`: a matrix of posterior samples of $\symbf{\gamma}_w$. It has size `(n_sim-n_burn+1) x d_w`, where `d_w = length(fixed_eff_w_ind)` is the number of predictors in the logistic model for the observation-level outliers.
+-   `gamma.z`: a matrix of posterior samples of $\symbf{\gamma}_z$. It has size `(n_sim-n_burn+1) x d_z`, where `d_z = length(fixed_eff_zind)` is the number of predictors in the logistic model for the variance heterogeneity indicators.
+
+We use the `function HEM_HEV_O` to identify heterogeneity and outliers in the CD4 data as follows,
+
+```{r hem_hev_o}
+#| include: true
+#| echo: true
+
+mod <- HEM_HEV_O (
+  dat,
+  fixed_eff_ind = 1:8,
+  rand_eff_ind = 1:2,
+  fixed_eff_u_ind = c(1,4:8),
+  fixed_eff_w_ind = c(1,2,4:8),
+  fixed_eff_z_ind = c(1,4:8),
+  eta_u = 3,
+  eta_w = 3,
+  eta_z = 3,
+  n_sim = n_sim,
+  n_burn = n_burn
+)
+ls(mod)
+
+## saving the model
+save(mod, file = "mod_HEM_HEV_O.RData")
+```
+
+## Submodels HOM-HOV, HEM-HOV, HOM-HOV-O, HEM-HOV-O
+
+For each of the sub-models a separate model fitting function is defined with a similar set of arguments excluding those which are not relevant for the respective models. All functions return the same `list` of parameters as returned by `HEM_HEV_O`.
+
+\textbf{\texttt{HOM\_HOV}}: The arguments are `dat`, `fixed_eff_ind`, `rand_eff_ind`, `n_sim`, `n_burn`. Among the `list` of parameters returned,
+
+-   `u`, `w`, and `z` will be all zeros since the model HOM-HOV asssumes no heterogeneity
+-   `gamma.u`, `gamma.w`, and `gamma.z` samples are drawn from their respective priors and can be ignored.
+-   The first column of the `sigma2` are posterior samples of $\sigma_0^2$, while the second column of `sigma2` representing $\sigma_1^2$ are drawn from its prior and can be ignored.
+-   The variables `alpha` and `sigma.e2` can be ignored as they are not relevant to the model HOM-HOV.
+
+```{r hom_hov}
+#| include: true
+#| echo: true
+
+mod <- HOM_HOV (
+  dat,
+  fixed_eff_ind = 1:8,
+  rand_eff_ind = 1:2,
+  n_sim = n_sim,
+  n_burn = n_burn
+)
+save(mod, file = "mod_HOM_HOV.RData")
+```
+
+\textbf{\texttt{HEM\_HOV}}: The arguments are `dat`, `fixed_eff_ind`, `rand_eff_ind`, `fixed_eff_u_ind`, `eta_u`, `n_sim`, `n_burn`. Among the parameters returned by the function,
+
+-   `u` will be sampled from its posterior distribution, while `w` and `z` will be all zeros indicating only mean heterogeneity
+-   `gamma.u` will be posterior samples of $\symbf{\gamma}_u$, and we can ignore `gamma.w` and `gamma.z` variables.
+-   The interpretation of `sigma2` is same as in `HOM_HOV`.
+-   The variables `alpha` and `sigma.e2` can be ignored as they are not relevant to the model HEM-HOV.
+
+```{r hem_hov}
+#| include: true
+#| echo: true
+
+mod <- HEM_HOV (
+  dat,
+  fixed_eff_ind = 1:8,
+  rand_eff_ind = 1:2,
+  fixed_eff_u_ind = c(1,4:8),
+  eta_u = 3,
+  n_sim = n_sim,
+  n_burn = n_burn
+)
+save(mod, file = "mod_HEM_HOV.RData")
+```
+
+`HOM_HOV_O`: The arguments are `dat`, `fixed_eff_ind`, `rand_eff_ind`, `fixed_eff_w_ind`, `eta_w`, `n_sim`, `n_burn`. Among the parameters returned by the function,
+
+-   `w` will be sampled from its posterior distribution, while `u` and `z` will be all zeros allowing only observation-level outliers
+-   `gamma.w` will be posterior samples of $\symbf{\gamma}_w$, while `gamma.u` and `gamma.z` can be ignored.
+-   The interpretation of `sigma2` is same as in `HOM_HOV`.
+-   The variables `alpha` and `sigma.e2` can be ignored as they are not relevant to the model HOM-HOV-O.
+
+```{r hom_hov_o}
+#| include: true
+#| echo: true
+
+mod <- HOM_HOV_O (
+  log_cd4_dat,
+  fixed_eff_ind = 1:8,
+  rand_eff_ind = 1:2,
+  fixed_eff_w_ind = c(1,2,4:8),
+  eta_w = 3,
+  n_sim = n_sim,
+  n_burn = n_burn
+)
+save(mod, file = "mod_HOM_HOV_O.RData")
+```
+
+`HEM_HOV_O`: The arguments are `dat`, `fixed_eff_ind`, `rand_eff_ind`, `fixed_eff_u_ind`, `fixed_eff_w_ind`, `eta_u`, `eta_w`, `n_sim`, `n_burn`. Among the parameters returned by the function,
+
+-   `u` and `w` will be sampled from their posterior distributions, while `z` will be all zeros due to the assumption of variance heterogeneity
+-   `gamma.u` and `gamma.w` will be posterior samples of $\symbf{\gamma}_u$ and $\symbf{\gamma}_w$ respectively, and we can ignore `gamma.z`.
+-   The interpretation of `sigma2` is same as in `HOM_HOV`.
+-   The variables `alpha` and `sigma.e2` can be ignored as they are not relevant to the model HEM-HOV-O.
+
+```{r hem_hov_o}
+#| include: true
+#| echo: true
+
+mod <- HEM_HOV_O (
+  dat,
+  fixed_eff_ind = 1:8,
+  rand_eff_ind = 1:2,
+  fixed_eff_u_ind = c(1,4:8),
+  fixed_eff_w_ind = c(1,2,4:8),
+  eta_u = 3,
+  eta_w = 3,
+  n_sim = n_sim,
+  n_burn = n_burn
+)
+save(mod, file = "mod_HEM_HOV_O.RData")
+
+```
+
+Note that, the `list` contains several parameters, e.g., the indicators `u`, `w`, `z`, `gamma.u`, `gamma.w`, `gamma.z`, `alpha` that are not directly relevant for HOM-HOV model. We made this choice to keep the format of the model objects same across HEM-HEV-O and all its submodels. To extract only the relevant set of parameters for a particular model `extract_params()` `function` is provided that can be used as follows:
+
+```{r extract_parameters}
+#| include: true
+#| echo: true
+
+## extracting the only the relevant parameters
+params_list <- extract_params(mod, "HEM-HEV-O")
+ls(params_list)
+
+
+```
+
+# Model Selection {#sec-waic}
+
+We calculate WAIC for the model HEM-HEV-O using `function compute_WAIC_HEM_HEV_O`. The arguments of the function are:
+
+-   `dat`: the dataset
+-   `mod`: the list of parameters obtained by running `function HEM_HEV_O` on `dat`
+-   `iter_sel`: the array of iteration indices for the posterior samples to be used to calculate WAIC
+-   `type`: can take two values "C-WAIC" and "M-WAIC" representing conditional and marginal version of WAIC
+-   rest of the parameters are as discussed in @sec-model-fit-hemhevo
+
+The function returns C-WAIC or M-WAIC depending on the argument `type`.
+
+We use the function to calculate the WAIC for model HEM-HEV-O on CD4 data as follows,
+
+```{r waic}
+#| include: true
+#| echo: true
+
+load('mod_HEM_HEV_O.RData')
+iter_sel <- seq(1,n_sim-n_burn,4)
+
+WAIC <- array(NA, 2)
+waic_types <- c("M-WAIC", "C-WAIC")
+for (i in seq_along(waic_types)) {
+  WAIC[i] <- compute_WAIC_HEM_HEV_O(
+    dat,
+    mod,
+    iter_sel,
+    fixed_eff_ind = 1:8,
+    rand_eff_ind = 1:2,
+    fixed_eff_u_ind = c(1,4:8),
+    fixed_eff_w_ind = c(1,2,4:8),
+    fixed_eff_z_ind = c(1,4:8),
+    eta_u = 3,
+    eta_w = 3,
+    eta_z = 3,
+    type = waic_types[i]
+  )
+}
+save(WAIC, file = "WAIC_HEM_HEV_O.RData")
+
+```
+The calculation yields M-WAIC = `r round(WAIC[1],2)`, and C-WAIC = `r round(WAIC[2],2)`.
+
+For the rest of the models, we use the corresponding WAIC `function`s as follows,
+
+```{r waic_hom_hov}
+#| include: true
+#| echo: true
+
+load('mod_HOM_HOV.RData')
+iter_sel <- seq(1,n_sim-n_burn,4)
+
+WAIC <- array(NA, 2)
+waic_types <- c("M-WAIC", "C-WAIC")
+for (i in seq_along(waic_types)) {
+  WAIC[i] <- compute_WAIC_HOM_HOV (
+    dat,
+    mod,
+    iter_sel,
+    fixed_eff_ind = 1:8,
+    rand_eff_ind = 1:2,
+    type = waic_types[i]
+  )
+}
+save(WAIC, file = "WAIC_HOM_HOV.RData")
+```
+For model HOM-HOV, M-WAIC = `r round(WAIC[1],2)`, and C-WAIC = `r round(WAIC[2],2)`.
+
+
+```{r waic_hem_hov}
+#| include: true
+#| echo: true
+
+load('mod_HEM_HOV.RData')
+iter_sel <- seq(1,n_sim-n_burn,4)
+
+WAIC <- array(NA, 2)
+waic_types <- c("M-WAIC", "C-WAIC")
+for (i in seq_along(waic_types)) {
+  WAIC[i] <- compute_WAIC_HEM_HOV (
+    dat,
+    mod,
+    iter_sel,
+    fixed_eff_ind = 1:8,
+    rand_eff_ind = 1:2,
+    fixed_eff_u_ind = c(1,4:8),
+    eta_u = 3,
+    type = waic_types[i]
+  )
+}
+save(WAIC, file = "WAIC_HEM_HOV.RData")
+```
+For model HEM-HOV, M-WAIC = `r round(WAIC[1],2)`, and C-WAIC = `r round(WAIC[2],2)`.
+
+
+```{r waic_hom_hov_o}
+#| include: true
+#| echo: true
+
+load('mod_HOM_HOV_O.RData')
+iter_sel <- seq(1,n_sim-n_burn,4)
+
+WAIC <- array(NA, 2)
+waic_types <- c("M-WAIC", "C-WAIC")
+for (i in seq_along(waic_types)) {
+  WAIC[i] <- compute_WAIC_HOM_HOV_O (
+    dat,
+    mod,
+    iter_sel,
+    fixed_eff_ind = 1:8,
+    rand_eff_ind = 1:2,
+    fixed_eff_w_ind = c(1,2,4:8),
+    eta_w = 3,
+    type = waic_types[i]
+  )
+}
+save(WAIC, file = "WAIC_HOM_HOV_O.RData")
+```
+For model HOM-HOV_O, M-WAIC = `r round(WAIC[1],2)`, and C-WAIC = `r round(WAIC[2],2)`.
+
+```{r waic_hem_hov_o}
+#| include: true
+#| echo: true
+
+load('mod_HEM_HOV_O.RData')
+iter_sel <- seq(1,n_sim-n_burn,4)
+
+WAIC <- array(NA, 2)
+waic_types <- c("M-WAIC", "C-WAIC")
+for (i in seq_along(waic_types)) {
+  WAIC[i] <- compute_WAIC_HEM_HOV_O (
+    dat,
+    mod,
+    iter_sel,
+    fixed_eff_ind = 1:8,
+    rand_eff_ind = 1:2,
+    fixed_eff_u_ind = c(1,4:8),
+    fixed_eff_w_ind = c(1,2,4:8),
+    eta_u = 3,
+    eta_w = 3,
+    type = waic_types[i]
+  )
+}
+save(WAIC, file = "WAIC_HEM_HOV_O.RData")
+```
+
+For model HEM-HOV_O, M-WAIC = `r round(WAIC[1],2)`, and C-WAIC = `r round(WAIC[2],2)`.
+
+
+# Generating Tables and Plots {#sec-estimation}
+
+We now demonstrate how to generate Tables and plots presented in the manuscript. We start by generating a part of Table D.2 in the supplimentary document. The following code generates results for $\eta = 3$, and the code can be suitably adjusted to generate the rest of the information in Table D.2.
+
+```{r heterogeneity_estimation}
+#| include: true
+#| echo: true
+
+mod_type_arr <- c("HOM_HOV", "HEM_HOV", "HOM_HOV_O", "HEM_HOV_O", "HEM_HEV_O")
+indc_mat <- matrix(NA, nrow = 5, ncol = 3)
+sigma02_mat <- matrix(NA, nrow = 5, ncol = 3)
+sigma12_arr <- array(NA, 5)
+alpha_arr <- array(NA, 5)
+iter_sel <- seq(1,n_sim-n_burn,4)
+for (i in seq_along(mod_type_arr)) {
+  load(paste0('mod_', mod_type_arr[i], ".RData"))
+  indc_mat[i,] <- c(
+    mean(colMeans(mod$u[iter_sel,])),
+    mean(colMeans(mod$w[iter_sel,])),
+    mean(colMeans(mod$z[iter_sel,]))
+  )
+  sigma02_mat[i,] <- formatC(
+    c(
+      mean(mod$sigma2[iter_sel,1]),
+      as.numeric(hdi(mod$sigma2[iter_sel,1]))
+    ), 
+    digits = 3, format = "f"
+  )
+  if (i == 5) {
+    sigma12_arr[i] <- formatC(mean(mod$sigma2[iter_sel,2]), digits=3, format="f")
+    alpha_arr[i] <- formatC(mean(mod$alpha[iter_sel,2]), digits=3, format="f")
+  }
+}
+est_df <- cbind.data.frame(
+  formatC(round(indc_mat, 3), digits=3, format = "f"), 
+  sigma02_mat[,1],
+  paste0("(", sigma02_mat[,2], ", ", sigma02_mat[,3], ")"),
+  sigma12_arr,
+  alpha_arr
+)
+rownames(est_df) <- gsub("_", "-", mod_type_arr)
+colnames(est_df) <- c(
+  "$\\widehat{u}$", "$\\widehat{w}$", "$\\widehat{z}$", "$\\widehat{\\sigma_0^2}$", 
+  "95\\% CI", "$\\widehat{\\sigma_1^2}$", "$\\widehat{\\alpha}$"
+)
+
+kbl(est_df, booktabs=T, align = c("l", rep("c", ncol(est_df)-1)), escape=F) %>%
+  kable_styling(position = "center", latex_options=c("hold_position"))
+
+```
+
+
+Now we generate the profile plots with outliers and mean/variance heterogeneity.
+
+## Generating plot showing observation-level outliers
+
+```{r plots}
+#| include: true
+#| echo: true
+#| fig-width: 5
+#| fig-height: 4.5
+
+load('mod_HEM_HEV_O.RData')
+fixed_eff_ind <- 1:8
+beta_est <- colMeans(mod$beta[iter_sel,])
+r_est <- matrix(colMeans(mod$r_mat[iter_sel,]), ncol=2)
+w_est <- colMeans(mod$w[iter_sel,])
+out_id <- as.numeric(w_est > 0.5)
+
+id_arr_list <- list()
+max_w_est_profile <- array(NA, length(dat$data))
+out_id_list <- list()
+for (i in 1:n) {
+  id_arr_list[[i]] <- ni_max*(i-1) + (1:ni_arr[i])
+  max_w_est_profile[i] <- max(w_est[id_arr_list[[i]]])
+  out_id_list[[i]] <- out_id[id_arr_list[[i]]]
+}
+
+n_indv <- 8
+rem1 <- order(max_w_est_profile, decreasing=TRUE)[1:n_indv]
+rem2 <- rev(order(max_w_est_profile, decreasing=FALSE)[1:n_indv])
+rem <- c(rem1, rem2)
+out_indc <- do.call(c, out_id_list[rem])
+
+plt_df <- data.frame(
+  tt = unlist(lapply(rem, function(i) {dat$time[[i]]})),
+  y = unlist(lapply(
+    rem, 
+    function(i) {c(dat$data[[i]] - dat$fixed.eff[[i]][,fixed_eff_ind] %*% beta_est)}
+  )),
+  id = factor(
+    unlist(lapply(
+      rem, function(i) {
+        rep(paste0("ID: ", i, " (prob: ", max_w_est_profile[i], ")"), each = ni_arr[i])
+      }
+    )),
+    levels = unlist(lapply(rem, function(i) {
+      paste0("ID: ", i, " (prob: ", max_w_est_profile[i], ")")
+    }))),
+  out = factor(out_indc, levels = c(0,1), labels = c("No", "Yes"))
+)
+
+ggplot(data = plt_df, aes (x = tt, y = y)) +
+  geom_point(aes(size = out)) +
+  scale_size_manual(breaks = c("No", "Yes"), values = c(1,3)) +
+  scale_y_continuous(expand = c(0.1, 0.1)) +
+  geom_line(color = "darkgrey") +
+  labs(x = "time", y = "residuals", size = "Outlier") +
+  facet_wrap(~id, nrow = 4, scales="free_x") +
+  theme_bw() +
+  theme(legend.position = "bottom", strip.background = element_rect(fill = "white"))
+
+```
+
+## Generating plot showing mean heterogeneity
+
+```{r mean_het_plot}
+#| include: true
+#| echo: true
+#| fig-width: 5
+#| fig-height: 3
+
+n_indv <- 4
+rand_eff_ind <- 1:2
+beta_est <- colMeans(mod$beta[iter_sel,])
+r_est <- matrix(colMeans(mod$r_mat[iter_sel,]), ncol=2)
+u_est <- colMeans(mod$u[iter_sel,])
+het_ind <- order(rank(u_est, ties.method = "first"), decreasing = TRUE)[1:(n_indv)]
+hom_ind <- order(rank(u_est, ties.method = "first"), decreasing = FALSE)[1:(n_indv)]
+u_ind <- c(het_ind, rev(hom_ind))
+ni_sum <- c(0, cumsum(sapply(dat$data, function(x) {length(x)})))
+# w_prob_list <- lapply(u_ind, function(ind) {w_est[(ni_sum[ind]+1):ni_sum[ind+1]]})
+w_prob_list <- lapply(u_ind, function(ind) {w_est[id_arr_list[[ind]]]})
+w_prob <- factor (
+  ifelse (unlist(w_prob_list) > 0.5, 1, 0),
+  levels = c(0,1), labels = c("No", "Yes")
+)
+max_w_prob <- sapply(w_prob_list, function(l) {max(l)})
+
+ni_ind <- sapply(u_ind, function(i) {length(dat$data[[i]])})
+
+plt_u_dat <- data.frame (
+  tt = unlist(lapply(u_ind, function(i) {dat$time[[i]]})),
+  y = unlist(lapply(
+    u_ind, 
+    function(i) {
+      c(dat$data[[i]] - dat$fixed.eff[[i]][,fixed_eff_ind] %*% beta_est)
+    }
+  )),
+  id = factor(unlist(lapply(
+    1:length(ni_ind),
+    function(i) {
+      rep(paste0("ID: ", u_ind[i],
+                 " (prob: ", round(u_est[u_ind[i]],3), ")"),
+          each = ni_ind[i])
+    }
+  )),
+  levels = unlist(lapply(
+    1:length(ni_ind),
+    function(i) {
+      paste0("ID: ", u_ind[i], " (prob: ", round(u_est[u_ind[i]],3) ,")")
+    }
+  ))),
+  r_i = do.call(c, lapply(
+    u_ind, function(i) c(dat$fixed.eff[[i]][,rand_eff_ind]%*%r_est[i,])
+  )),
+  w_prob = w_prob
+)
+
+ggplot(
+  data = plt_u_dat, aes (x = tt, y = y, r_i = r_i)
+) +
+  geom_point(aes(size=w_prob)) +
+  geom_line(color = "darkgrey") +
+  geom_line(aes(x=tt, y=r_i), color="blue") +
+  geom_hline(yintercept = 0, color = "red") +
+  labs(x = "time", y = "residuals", title = "Subject-level Mean Heterogeneity") +
+  scale_y_continuous(expand = c(0.1, 0.1)) +
+  scale_size_manual(
+    name = "Outlier", breaks = c("No", "Yes"), values = c(1,3), drop = FALSE
+  ) +
+  facet_wrap(~id, nrow = 2, ncol = 4) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        strip.background = element_rect(fill = "white"),
+        legend.key.width = unit(1, 'cm'),
+        plot.title = element_text(size=11))
+
+```
+
+## Generating plot showing variance heterogeneity
+
+```{r var_het_plot}
+#| include: true
+#| echo: true
+#| fig-width: 5
+#| fig-height: 3
+
+n_indv <- 4
+beta_est <- colMeans(mod$beta[iter_sel,])
+r_est <- matrix(colMeans(mod$r_mat[iter_sel,]), ncol=2)
+z_est <- colMeans(mod$z[iter_sel,])
+het_ind <- order(rank(z_est, ties.method = "first"), decreasing = TRUE)[1:(n_indv)]
+hom_ind <- order(rank(z_est, ties.method = "first"), decreasing = FALSE)[1:(n_indv)]
+z_ind <- c(het_ind, rev(hom_ind))
+ni_sum <- c(0, cumsum(sapply(dat$data, function(x) {length(x)})))
+# w_prob_list <- lapply(z_ind, function(ind) {W_est[(ni_sum[ind]+1):ni_sum[ind+1]]})
+w_prob_list <- lapply(z_ind, function(ind) {w_est[id_arr_list[[ind]]]})
+w_prob <- factor (
+  ifelse (unlist(w_prob_list) > 0.5, 1, 0),
+  levels = c(0,1), labels = c("No", "Yes")
+)
+max_w_prob <- sapply(w_prob_list, function(l) {max(l)})
+
+ni_ind <- sapply(z_ind, function(i) {length(dat$data[[i]])})
+
+plt_z_dat <- data.frame (
+  tt = unlist(lapply(z_ind, function(i) {dat$time[[i]]})),
+  y = unlist(lapply(
+    z_ind, 
+    function(i) {
+      c(dat$data[[i]] - dat$fixed.eff[[i]][,fixed_eff_ind] %*% beta_est)
+    }
+  )),
+  id = factor(unlist(lapply(
+    1:length(ni_ind),
+    function(i) {
+      rep(paste0("ID: ", z_ind[i],
+                 " (prob: ", round(z_est[z_ind[i]],3), ")"),
+          each = ni_ind[i])
+    }
+  )),
+  levels = unlist(lapply(
+    1:length(ni_ind),
+    function(i) {
+      paste0("ID: ", z_ind[i], " (prob: ", round(z_est[z_ind[i]],3) ,")")
+    }
+  ))),
+  r_i = do.call(c, lapply(
+    z_ind, function(i) c(dat$fixed.eff[[i]][,rand_eff_ind]%*%r_est[i,])
+  )),
+  w_prob = w_prob
+)
+
+ggplot(
+  data = plt_z_dat, aes (x = tt, y = y, r_i = r_i)
+) +
+  geom_point(aes(size=w_prob)) +
+  geom_line(color = "darkgrey") +
+  geom_line(aes(x=tt, y=r_i), color="blue") +
+  geom_hline(yintercept = 0, color = "red") +
+  labs(x = "time", y = "residuals", title = "Subject-level Variance Heterogeneity") +
+  scale_y_continuous(expand = c(0.1, 0.1)) +
+  scale_size_manual(
+    name = "Outlier", breaks = c("No", "Yes"), values = c(1,3), drop = FALSE
+  ) +
+  facet_wrap(~id, nrow = 2, ncol = 4) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        strip.background = element_rect(fill = "white"),
+        legend.key.width = unit(1, 'cm'),
+        plot.title = element_text(size=11))
+
+```
+
