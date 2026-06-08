@@ -1,10 +1,17 @@
+use_package <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg, repos = "https://r-project.org")
+  }
+  library(pkg, character.only = TRUE)
+}
+
+suppressWarnings(use_package("mvtnorm"))
+suppressWarnings(use_package("invgamma"))
+suppressWarnings(use_package("ggplot2"))
+suppressWarnings(use_package("ggpubr"))
+suppressWarnings(use_package("gridExtra"))
+suppressWarnings(use_package("ggExtra"))
 library(MASS)
-suppressWarnings(library(mvtnorm))
-suppressWarnings(library(invgamma))
-suppressWarnings(library(ggplot2))
-suppressWarnings(library(ggpubr))
-suppressWarnings(library(gridExtra))
-suppressWarnings(library(ggExtra))
 
 view.doc <- function (file.path, type='html') {
   file.dir.path <- dirname(file.path)
