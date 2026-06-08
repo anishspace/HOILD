@@ -2933,7 +2933,9 @@ double compute_WAIC_EVIII_RE_marginal_1(
       Lambda_mat = arma::reshape(Lambda.row(iter).t(), d_rand, d_rand);
       if (is_conditional != 0) {
         W_i_vec = W_mat.row(iter).subvec(ni_max*i,ni_max*(i+1)-1).t();
+        // if (iter == 0) Rcout << "i: " << i << ", W_i_vec: " << W_i_vec.t() << "\n";
         W_i = arma::diagmat(W_i_vec.subvec(0,ni(i)-1));
+        // if (iter == 0) Rcout << "W_i_vec: " << W_i.diag().t() << "\n";
         I_W_i = arma::diagmat(arma::ones(ni(i))) - W_i;
         prior_i_out = 
           (1-u_mat(iter,i))*log(1-pi_u) + u_mat(iter,i)*log(pi_u) +
@@ -3085,7 +3087,7 @@ double compute_WAIC_EVIII_RE_marginal_1(
     pb.increment();
   }
   LPML = arma::accu(cpo_arr);
-  return (2*arma::accu(waic_arr));
+  return (-2*2*arma::accu(waic_arr));
 }
 
 
