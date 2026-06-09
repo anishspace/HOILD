@@ -2,7 +2,7 @@ suppressWarnings(suppressPackageStartupMessages(library(Rcpp)))
 suppressWarnings(suppressPackageStartupMessages(library(RcppArmadillo)))
 
 source('utilities.R')
-Rcpp::sourceCpp('utilities_new.cpp')
+Rcpp::sourceCpp('utilities.cpp')
 
 HOM_HOV <- function(
     dat,
